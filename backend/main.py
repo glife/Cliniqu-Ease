@@ -1,5 +1,6 @@
 # main.py
-from fastapi import FastAPI, HTTPException, Request
+from collections import defaultdict
+from fastapi import FastAPI, HTTPException, Request, Query
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import requests
@@ -7,7 +8,7 @@ import sys
 import threading
 import time
 import itertools
-
+#from pyspark import SparkContext, SparkConf
 # ---------- Config ----------
 if len(sys.argv) != 3:
     print("Usage: python main.py <port> <all_server_ports_comma_separated>")
@@ -17,6 +18,8 @@ PORT = int(sys.argv[1])
 ALL_PORTS = list(map(int, sys.argv[2].split(',')))
 OTHER_PORTS = [p for p in ALL_PORTS if p != PORT]
 
+# conf = SparkConf().setAppName("ClinicSalesReport").setMaster("local[*]")
+# sc = SparkContext.getOrCreate(conf=conf)
 app = FastAPI(title=f"Backend Server {PORT}")
 
 # ---------- In-memory DB (shared state replicated by coordinator) ----------
@@ -24,6 +27,8 @@ MEDICINES: List[Dict] = [
     {"id": 0, "name": "Paracetamol", "stock": 10, "price": 20},
     {"id": 1, "name": "Ibuprofen", "stock": 5, "price": 30},
     {"id": 2, "name": "Amoxicillin", "stock": 7, "price": 50},
+    {"id": 3, "name": "Cough Syrup", "stock": 8, "price": 40},
+    {"id": 4, "name": "Antacid", "stock": 15, "price": 25},
 ]
 USERS: List[Dict] = []        # each: {id, username, password}
 APPOINTMENTS: List[Dict] = [] # each: {id, user_id, doctor_id, time_slot, symptoms, prescription}
@@ -31,7 +36,8 @@ DOCTORS: List[Dict] = [
     {"id": 0, "name": "Dr. Mehta", "specialty": "General", "available_slots": ["10:00", "11:00", "15:00"]},
     {"id": 1, "name": "Dr. Rao", "specialty": "Pediatrics", "available_slots": ["09:30", "13:00", "16:00"]},
 ]
-
+DOCTOR_RATINGS: Dict[int, List[int]] = {}  # doctor_id -> list of ratings
+MEDICINE_SALES = []
 lock = threading.Lock()
 _id_counter = itertools.count(start=1)
 
@@ -63,10 +69,18 @@ class BookRequest(BaseModel):
     time_slot: str
 
 class ConsultRequest(BaseModel):
-    user_id: int
-    doctor_id: int
+    appointment_id: int
     symptoms: List[str]
+    
+class BuyPrescriptionRequest(BaseModel):
+    appointment_id: int
 
+class RatingRequest(BaseModel):
+    user_id: int
+    rating: int  # 1-5
+
+class RescheduleRequest(BaseModel):
+    new_time_slot: str
 # ---------- Coordinator & Clock ----------
 coordinator_port = max(ALL_PORTS)
 logical_clock = time.time()
@@ -129,23 +143,52 @@ def async_clock_sync():
                 logical_clock = master_time + rtt / 2
                 # print small debug
                 print(f"[Server {PORT}] Clock synced with coordinator {coordinator_port}: {logical_clock}")
+                print("Time before syncing:",t1,"\nTime after syncing:",logical_clock)
         except:
             pass
     threading.Thread(target=_sync, daemon=True).start()
 
+def is_node_alive(port):
+    """Check if a node is alive using its health endpoint."""
+    try:
+        res = requests.get(f"http://127.0.0.1:{port}/health", timeout=REQ_TIMEOUT)
+        return res.status_code == 200
+    except:
+        return False
+
 def push_full_state_to_replicas():
-    """Coordinator pushes full application state to replicas."""
+    """Coordinator pushes full application state to only live replicas."""
+    global OTHER_PORTS   # So we can update the list by removing dead nodes
+
     snapshot = {
         "medicines": MEDICINES,
         "users": USERS,
         "appointments": APPOINTMENTS,
+        "doctor_ratings": DOCTOR_RATINGS,
+        "medicine_sales": MEDICINE_SALES
     }
+
     def _push():
+        global OTHER_PORTS
+        alive_ports = []
         for p in OTHER_PORTS:
-            try:
-                requests.post(f"http://127.0.0.1:{p}/push_state", json=snapshot, timeout=REQ_TIMEOUT)
-            except Exception as e:
-                print(f"[Server {PORT}] Failed to push state to {p}: {e}")
+            if is_node_alive(p):
+                try:
+                    requests.post(
+                        f"http://127.0.0.1:{p}/push_state",
+                        json=snapshot,
+                        timeout=REQ_TIMEOUT
+                    )
+                    print(f"[Server {PORT}] ✅ State pushed to {p}")
+                    alive_ports.append(p)
+                except Exception as e:
+                    print(f"[Server {PORT}] ⚠️ Node {p} alive but failed to push state: {e}")
+            else:
+                print(f"[Server {PORT}] ❌ Node {p} is DOWN, skipping...")
+        
+        # Update OTHER_PORTS to only include alive replicas
+        OTHER_PORTS = alive_ports
+
     threading.Thread(target=_push, daemon=True).start()
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -183,16 +226,20 @@ def update_coordinator(payload: dict):
 @app.post("/push_state")
 def push_state(payload: dict):
     """Replace local replicated state with coordinator snapshot (best-effort)."""
-    global MEDICINES, USERS, APPOINTMENTS
+    global MEDICINES, USERS, APPOINTMENTS, DOCTOR_RATINGS, MEDICINE_SALES
     meds = payload.get("medicines")
     users = payload.get("users")
     apps = payload.get("appointments")
-    if not isinstance(meds, list) or not isinstance(users, list) or not isinstance(apps, list):
+    doctor_ratings = payload.get("doctor_ratings")
+    medicine_sales = payload.get("medicine_sales")
+    if not isinstance(meds, list) or not isinstance(users, list) or not isinstance(apps, list) or not isinstance(doctor_ratings, dict) or not isinstance(medicine_sales, list):
         raise HTTPException(status_code=400, detail="invalid state payload")
     with lock:
         MEDICINES = [m.copy() for m in meds]
         USERS = [u.copy() for u in users]
         APPOINTMENTS = [a.copy() for a in apps]
+        DOCTOR_RATINGS = {int(k): v.copy() for k, v in doctor_ratings.items()}
+        MEDICINE_SALES =  [mr.copy() for mr in medicine_sales]
     print(f"[Server {PORT}] Received full state snapshot from coordinator")
     return {"status": "synced"}
 
@@ -226,6 +273,20 @@ def login(req: LoginRequest):
                 return {"status": "SUCCESS", "user_id": u["id"]}
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
+@app.get("/users/{user_id}/appointments")
+def list_appointments(user_id: int):
+    async_clock_sync()
+    with lock:
+        user_appts = [a for a in APPOINTMENTS if a["user_id"] == user_id]
+    return {"appointments": user_appts}
+
+@app.get("/users/{user_id}/prescriptions")
+def list_prescriptions(user_id: int):
+    with lock:
+        user_appts = [a for a in APPOINTMENTS if a["user_id"] == user_id and a.get("prescription")]
+        prescriptions = [{"appointment_id": a["id"], "prescription": a["prescription"]} for a in user_appts]
+    return {"prescriptions": prescriptions}
+
 # ---------- Doctor & Appointment endpoints ----------
 @app.get("/doctors")
 def get_doctors():
@@ -243,6 +304,34 @@ def get_doctor_available(doctor_id: int):
             return {"doctor_id": doctor_id, "available_slots": available}
     raise HTTPException(status_code=404, detail="Doctor not found")
 
+@app.post("/ratings/{doctor_id}")
+def rate_doctor(doctor_id: int, req: RatingRequest):
+    # writes go through coordinator
+    current_coord = ensure_coordinator_alive_check()
+    if current_coord != PORT:
+        try:
+            r = requests.post(f"http://127.0.0.1:{current_coord}/ratings/{doctor_id}", json=req.dict(), timeout=REQ_TIMEOUT)
+            return r.json()
+        except Exception:
+            elect_coordinator()
+            if coordinator_port != PORT:
+                raise HTTPException(status_code=503, detail="Coordinator unreachable; try again")
+    # coordinator rates
+    with lock:
+        if doctor_id not in DOCTOR_RATINGS:
+            DOCTOR_RATINGS[doctor_id] = []
+        DOCTOR_RATINGS[doctor_id].append(req.rating)
+    print(f"[Server {PORT}] User {req.user_id} gave a rating of {req.rating} to Doctor {doctor_id}")
+    push_full_state_to_replicas()
+    return {"status": "SUCCESS"}
+
+@app.get("/ratings/{doctor_id}")
+def get_doctor_rating(doctor_id: int):
+    with lock:
+        ratings = DOCTOR_RATINGS.get(doctor_id, [])
+        avg = sum(ratings)/len(ratings) if ratings else None
+    return {"average_rating": avg, "num_ratings": len(ratings)}
+        
 @app.post("/book")
 def book_appointment(req: BookRequest):
     # writes go through coordinator
@@ -274,6 +363,48 @@ def book_appointment(req: BookRequest):
     push_full_state_to_replicas()
     return {"status": "SUCCESS", "appointment_id": aid}
 
+@app.delete("/appointments/{appointment_id}")
+def cancel_appointment(appointment_id: int):
+    current_coord = ensure_coordinator_alive_check()
+    if current_coord != PORT:
+        try:
+            r = requests.delete(f"http://127.0.0.1:{current_coord}/appointments/{appointment_id}", timeout=REQ_TIMEOUT)
+            return r.json()
+        except:
+            elect_coordinator()
+            if coordinator_port != PORT:
+                raise HTTPException(status_code=503, detail="Coordinator unreachable")
+    with lock:
+        idx = next((i for i, a in enumerate(APPOINTMENTS) if a["id"] == appointment_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        APPOINTMENTS.pop(idx)
+    push_full_state_to_replicas()
+    return {"status": "SUCCESS", "message": "Appointment canceled"}
+
+@app.post("/appointments/{appointment_id}/reschedule")
+def reschedule_appointment(appointment_id: int, req: RescheduleRequest):
+    current_coord = ensure_coordinator_alive_check()
+    if current_coord != PORT:
+        try:
+            r = requests.post(f"http://127.0.0.1:{current_coord}/appointments/{appointment_id}/reschedule", json=req.dict(), timeout=REQ_TIMEOUT)
+            return r.json()
+        except:
+            elect_coordinator()
+            if coordinator_port != PORT:
+                raise HTTPException(status_code=503, detail="Coordinator unreachable")
+    with lock:
+        appt = next((a for a in APPOINTMENTS if a["id"] == appointment_id), None)
+        if not appt:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        # check doctor availability
+        doc = next((d for d in DOCTORS if d["id"] == appt["doctor_id"]), None)
+        if req.new_time_slot not in doc["available_slots"] or req.new_time_slot in [a["time_slot"] for a in APPOINTMENTS if a["doctor_id"] == doc["id"]]:
+            return {"status": "FAILED", "message": "Time slot not available"}
+        appt["time_slot"] = req.new_time_slot
+    push_full_state_to_replicas()
+    return {"status": "SUCCESS", "new_time_slot": req.new_time_slot}
+
 @app.post("/consult")
 def consult(req: ConsultRequest):
     """
@@ -293,15 +424,21 @@ def consult(req: ConsultRequest):
                 raise HTTPException(status_code=503, detail="Coordinator unreachable; try again")
     # simple symptom -> disease mapping
     symptom_text = " ".join(req.symptoms).lower()
+    print(f"[Server {PORT}] Consulting for symptoms: {symptom_text}")
     if "fever" in symptom_text or "temperature" in symptom_text:
         disease = "Fever"
         prescription = [{"medicine_id": 0, "quantity": 2}]
     elif "cough" in symptom_text or "cold" in symptom_text:
         disease = "Common Cold"
-        prescription = [{"medicine_id": 0, "quantity": 1}, {"medicine_id": 3 if len(MEDICINES)>3 else 0, "quantity": 1}]
+        prescription = [{"medicine_id": 0, "quantity": 1}]
+        if len(MEDICINES)>3:
+            prescription.append({"medicine_id": 3, "quantity": 1})
     elif "pain" in symptom_text or "headache" in symptom_text:
         disease = "Headache"
         prescription = [{"medicine_id": 1, "quantity": 2}]
+    elif "sore" in symptom_text or "throat" in symptom_text:
+        disease = "Infection"
+        prescription = [{"medicine_id": 2, "quantity": 1}]
     else:
         disease = "General Checkup"
         prescription = [{"medicine_id": 4 if len(MEDICINES)>4 else 0, "quantity": 1}]
@@ -309,29 +446,67 @@ def consult(req: ConsultRequest):
     # store into latest appointment if exists
     with lock:
         # find latest appointment for this user and doctor without prescription yet
-        apps = [a for a in APPOINTMENTS if a["user_id"] == req.user_id and a["doctor_id"] == req.doctor_id]
-        if apps:
-            latest = max(apps, key=lambda x: x["id"])
-            latest["symptoms"] = req.symptoms
-            latest["prescription"] = prescription
-            appt_id = latest["id"]
-        else:
-            # create a new appointment record (no timeslot)
-            appt_id = next(_id_counter)
-            APPOINTMENTS.append({"id": appt_id, "user_id": req.user_id, "doctor_id": req.doctor_id,
-                                 "time_slot": "walk-in", "symptoms": req.symptoms, "prescription": prescription})
-    print(f"[Server {PORT}] Consult done for user {req.user_id}. Diagnosis: {disease}. Prescription: {prescription}")
+        appt = next((a for a in APPOINTMENTS if a["id"] == req.appointment_id), None)
+        if not appt:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        user_id = appt["user_id"]
+        doctor_id = appt["doctor_id"]
+        # store symptoms and prescription
+        appt["symptoms"] = req.symptoms
+        appt["prescription"] = prescription
+    print(f"[Server {PORT}] Consult done for user {user_id}. Diagnosis: {disease}. Prescription: {prescription}")
     push_full_state_to_replicas()
     # respond with diagnosis & prescription
-    return {"diagnosis": disease, "prescription": prescription, "appointment_id": appt_id}
+    return {"diagnosis": disease, "prescription": prescription}
 
 # ---------- Pharmacy endpoints (reads/writes) ----------
 @app.get("/medicines")
-def get_medicines():
+def get_medicines(appointment_id: Optional[int] = Query(None)):
     ensure_coordinator_alive_check()
     async_clock_sync()
     with lock:
-        return {"medicines": MEDICINES}
+        if appointment_id is None:
+            return {"medicines": MEDICINES}
+        # find appointment
+        appt = next((a for a in APPOINTMENTS if a["id"] == appointment_id), None)
+        if not appt:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+        prescription = appt.get("prescription", [])
+        if not prescription:
+            return {"medicines": []}
+        # return detailed medicine info
+        meds = []
+        for item in prescription:
+            med_id = item["medicine_id"]
+            if med_id < 0 or med_id >= len(MEDICINES):
+                continue
+            med_info = MEDICINES[med_id].copy()
+            med_info["quantity"] = item["quantity"]
+            meds.append(med_info)
+        return {"medicines": meds}
+@app.get("/medicines/search")
+def search_medicines(name: str = Query(...)):
+    with lock:
+        results = [m for m in MEDICINES if name.lower() in m["name"].lower()]
+    return {"results": results}
+
+@app.post("/medicines/{medicine_id}/restock")
+def restock_medicine(medicine_id: int, quantity: int = Query(...)):
+    current_coord = ensure_coordinator_alive_check()
+    if current_coord != PORT:
+        try:
+            r = requests.post(f"http://127.0.0.1:{current_coord}/medicines/{medicine_id}/restock?quantity={quantity}", timeout=REQ_TIMEOUT)
+            return r.json()
+        except:
+            elect_coordinator()
+            if coordinator_port != PORT:
+                raise HTTPException(status_code=503, detail="Coordinator unreachable")
+    with lock:
+        if medicine_id < 0 or medicine_id >= len(MEDICINES):
+            raise HTTPException(status_code=404, detail="Medicine not found")
+        MEDICINES[medicine_id]["stock"] += quantity
+    push_full_state_to_replicas()
+    return {"status": "SUCCESS", "new_stock": MEDICINES[medicine_id]["stock"]}
 
 @app.post("/buy")
 def buy_medicine(request: BuyRequest):
@@ -352,6 +527,12 @@ def buy_medicine(request: BuyRequest):
         if med["stock"] < request.quantity:
             return {"status": "FAILED", "message": f"Not enough stock of {med['name']}"}
         med["stock"] -= request.quantity
+        MEDICINE_SALES.append({
+            "medicine_id": request.medicine_id,
+            "sold_qty": request.quantity,
+            "price": med["price"]
+        })
+
         snapshot = [m.copy() for m in MEDICINES]
     print(f"[Server {PORT}] (COORDINATOR) {request.name} bought {request.quantity} {med['name']}")
     push_full_state_to_replicas()
@@ -385,6 +566,12 @@ def buy_bulk(request: BuyBulkRequest):
         total_cost = 0
         for it in request.items:
             MEDICINES[it.medicine_id]["stock"] -= it.quantity
+            MEDICINE_SALES.append({
+                "medicine_id": it.medicine_id,
+                "sold_qty": it.quantity,
+                "price": MEDICINES[it.medicine_id]["price"]
+            })
+
             total_cost += MEDICINES[it.medicine_id].get("price", 0) * it.quantity
         snapshot = [m.copy() for m in MEDICINES]
     print(f"[Server {PORT}] (COORDINATOR) User {request.user_id} bought items {request.items}")
@@ -392,8 +579,90 @@ def buy_bulk(request: BuyBulkRequest):
     async_clock_sync()
     return {"status": "SUCCESS", "total_cost": total_cost}
 
+@app.post("/buy_prescription")
+def buy_prescription(req: BuyPrescriptionRequest):
+    current_coord = ensure_coordinator_alive_check()
+    if current_coord != PORT:
+        try:
+            r = requests.post(f"http://127.0.0.1:{current_coord}/buy_prescription", json=req.dict(), timeout=REQ_TIMEOUT)
+            return r.json()
+        except Exception:
+            elect_coordinator()
+            if coordinator_port != PORT:
+                raise HTTPException(status_code=503, detail="Coordinator unreachable; try again")
+
+    with lock:
+        # find appointment
+        appt = next((a for a in APPOINTMENTS if a["id"] == req.appointment_id), None)
+        if not appt:
+            raise HTTPException(status_code=404, detail="Appointment not found")
+
+        prescription = appt.get("prescription", [])
+        if not prescription:
+            return {"status": "FAILED", "message": "No prescription found for this appointment"}
+
+        # check stock for all items
+        for item in prescription:
+            med_id = item["medicine_id"]
+            qty = item["quantity"]
+            if med_id < 0 or med_id >= len(MEDICINES):
+                raise HTTPException(status_code=404, detail=f"Medicine id {med_id} not found")
+            if MEDICINES[med_id]["stock"] < qty:
+                return {"status": "FAILED", "message": f"Not enough stock of {MEDICINES[med_id]['name']}"}
+
+        # decrement stock and calculate total cost
+        total_cost = 0
+        for item in prescription:
+            med_id = item["medicine_id"]
+            qty = item["quantity"]
+            MEDICINES[med_id]["stock"] -= qty
+            MEDICINE_SALES.append({
+                "medicine_id": med_id,
+                "sold_qty": qty,
+                "price": MEDICINES[med_id]["price"]
+            })
+
+            total_cost += MEDICINES[med_id]["price"] * qty
+
+    print(f"[Server {PORT}] (COORDINATOR) User {appt['user_id']} bought prescription for appointment {req.appointment_id}")
+    push_full_state_to_replicas()
+    async_clock_sync()
+    return {"status": "SUCCESS", "total_cost": total_cost, "prescription": prescription}
+
+@app.get("/reports/sales")
+def sales_report():
+    with lock:
+        print("\n[MAP REDUCE] Generating Sales Report\n")
+        # --- Map stage ---
+        mapped = []
+        for x in MEDICINE_SALES:
+            name = MEDICINES[x["medicine_id"]]["name"]
+            revenue = x["sold_qty"] * x["price"]
+            mapped.append((name, revenue))
+            print(f"[MAP] {x} -> ({name}, {revenue})")
+        
+        # --- Shuffle / group stage ---
+        grouped = defaultdict(list)
+        for key, value in mapped:
+            grouped[key].append(value)
+        print("\n[SHUFFLE / GROUP] Grouped by medicine:")
+        for k, v in grouped.items():
+            print(f"{k}: {v}")
+        
+        # --- Reduce stage ---
+        reduced = []
+        print("\n[REDUCE] Summing revenues per medicine:")
+        for k, v in grouped.items():
+            total = sum(v)
+            reduced.append((k, total))
+            print(f"{k}: {total}")
+        
+        total_revenue = sum(amount for _, amount in reduced)
+        print(f"\n[TOTAL REVENUE] {total_revenue}\n")
+
+    return {"medicine_sales": reduced, "total_revenue": total_revenue}
 # ---------- Run ----------
 if __name__ == "__main__":
     print(f"Starting server on port {PORT}. Initial coordinator: {coordinator_port}")
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=PORT)
+    uvicorn.run("main:app", host="127.0.0.1", port=PORT, reload=True)

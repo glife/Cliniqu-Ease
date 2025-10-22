@@ -1,8 +1,8 @@
 # gateway.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 import requests
-from typing import List
+from typing import List, Optional
 import threading
 
 app = FastAPI(title="API Gateway")
@@ -40,10 +40,18 @@ class BookRequest(BaseModel):
     time_slot: str
 
 class ConsultRequest(BaseModel):
-    user_id: int
-    doctor_id: int
+    appointment_id: int
     symptoms: List[str]
 
+class BuyPrescriptionRequest(BaseModel):
+    appointment_id: int
+
+class RatingRequest(BaseModel):
+    user_id: int
+    rating: int  # 1-5
+
+class RescheduleRequest(BaseModel):
+    new_time_slot: str
 # ---------- Helper Functions ----------
 def get_alive_server():
     global rr_index
@@ -67,7 +75,7 @@ def get_alive_server():
 def signup(req: SignupRequest):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.post(f"http://127.0.0.1:{port}/signup", json=req.dict(), timeout=2)
+    r = requests.post(f"http://127.0.0.1:{port}/signup", json=req.dict(), timeout=5)
     print(f"[Gateway] Forwarded /signup request to backend {port}")
     return r.json()
 
@@ -75,7 +83,7 @@ def signup(req: SignupRequest):
 def login(req: LoginRequest):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.post(f"http://127.0.0.1:{port}/login", json=req.dict(), timeout=2)
+    r = requests.post(f"http://127.0.0.1:{port}/login", json=req.dict(), timeout=5)
     print(f"[Gateway] Forwarded /login request to backend {port}")
     return r.json()
 
@@ -83,7 +91,7 @@ def login(req: LoginRequest):
 def get_doctors():
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.get(f"http://127.0.0.1:{port}/doctors", timeout=2)
+    r = requests.get(f"http://127.0.0.1:{port}/doctors", timeout=5)
     print(f"[Gateway] Forwarded /doctors request to backend {port}")
     return r.json()
 
@@ -91,7 +99,7 @@ def get_doctors():
 def get_doctor_available(doctor_id: int):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.get(f"http://127.0.0.1:{port}/doctors/{doctor_id}/available", timeout=2)
+    r = requests.get(f"http://127.0.0.1:{port}/doctors/{doctor_id}/available", timeout=5)
     print(f"[Gateway] Forwarded /medicines request to backend {port}")
     return r.json()
 
@@ -99,23 +107,26 @@ def get_doctor_available(doctor_id: int):
 def book(req: BookRequest):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.post(f"http://127.0.0.1:{port}/book", json=req.dict(), timeout=2)
-    print(f"[Gateway] Forwarded /medicines request to backend {port}")
+    r = requests.post(f"http://127.0.0.1:{port}/book", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded /book request to backend {port}")
     return r.json()
 
 @app.post("/consult")
 def consult(req: ConsultRequest):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.post(f"http://127.0.0.1:{port}/consult", json=req.dict(), timeout=2)
-    print(f"[Gateway] Forwarded /medicines request to backend {port}")
+    r = requests.post(f"http://127.0.0.1:{port}/consult", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded /consult request to backend {port}")
     return r.json()
 
 @app.get("/medicines")
-def get_medicines():
+def get_medicines(appointment_id: Optional[int] = Query(None)):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.get(f"http://127.0.0.1:{port}/medicines", timeout=2)
+    url = f"http://127.0.0.1:{port}/medicines"
+    if appointment_id is not None:
+        url += f"?appointment_id={appointment_id}"
+    r = requests.get(url, timeout=5)
     print(f"[Gateway] Forwarded /medicines request to backend {port}")
     return r.json()
 
@@ -123,7 +134,8 @@ def get_medicines():
 def buy(req: BuyRequest):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
-    r = requests.post(f"http://127.0.0.1:{port}/buy", json=req.dict(), timeout=2)
+    r = requests.post(f"http://127.0.0.1:{port}/buy", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded /buy request to backend {port}")
     return r.json()
 
 @app.post("/buy_bulk")
@@ -131,4 +143,76 @@ def buy_bulk(req: BuyBulkRequest):
     port = get_alive_server()
     if not port: raise HTTPException(status_code=500, detail="No backends")
     r = requests.post(f"http://127.0.0.1:{port}/buy_bulk", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded /buy_bulk request to backend {port}")
+    return r.json()
+
+@app.post("/buy_prescription")
+def buy_prescription(req: BuyPrescriptionRequest):
+    port = get_alive_server()
+    if not port: raise HTTPException(status_code=500, detail="No backends")
+    r = requests.post(f"http://127.0.0.1:{port}/buy_prescription", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded /buy_prescription request to backend {port}")
+    return r.json()
+
+@app.get("/users/{user_id}/appointments")
+def list_appointments(user_id: int):
+    port = get_alive_server()
+    r = requests.get(f"http://127.0.0.1:{port}/users/{user_id}/appointments", timeout=5)
+    print(f"[Gateway] Forwarded /users/{user_id}/appointments request to backend {port}")
+    return r.json()
+
+@app.get("/users/{user_id}/prescriptions")
+def list_prescriptions(user_id: int):
+    port = get_alive_server()
+    r = requests.get(f"http://127.0.0.1:{port}/users/{user_id}/prescriptions", timeout=5)
+    print(f"[Gateway] Forwarded /users/{user_id}/prescriptions request to backend {port}")
+    return r.json()
+
+@app.delete("/appointments/{appointment_id}")
+def cancel_appointment(appointment_id: int):
+    port = get_alive_server()
+    r = requests.delete(f"http://127.0.0.1:{port}/appointments/{appointment_id}", timeout=5)
+    print(f"[Gateway] Forwarded /appointments/{appointment_id} request to backend {port}")
+    return r.json()
+
+@app.post("/appointments/{appointment_id}/reschedule")
+def reschedule_appointment(appointment_id: int, req: RescheduleRequest):
+    port = get_alive_server()
+    r = requests.post(f"http://127.0.0.1:{port}/appointments/{appointment_id}/reschedule", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded /appointments/{appointment_id}/reschedule request to backend {port}")
+    return r.json()
+
+@app.get("/medicines/search")
+def search_medicines(name: str):
+    port = get_alive_server()
+    r = requests.get(f"http://127.0.0.1:{port}/medicines/search?name={name}", timeout=5)
+    print(f"[Gateway] Forwarded /medicines/search request to backend {port}")
+    return r.json()
+
+@app.post("/medicines/{medicine_id}/restock")
+def restock_medicine(medicine_id: int, quantity: int):
+    port = get_alive_server()
+    r = requests.post(f"http://127.0.0.1:{port}/medicines/{medicine_id}/restock?quantity={quantity}", timeout=5)
+    print(f"[Gateway] Forwarded /medicines/{medicine_id}/restock request to backend {port}")
+    return r.json()
+
+@app.post("/ratings/{doctor_id}")
+def rate_doctor(doctor_id: int, req: RatingRequest):
+    port = get_alive_server()
+    r = requests.post(f"http://127.0.0.1:{port}/ratings/{doctor_id}", json=req.dict(), timeout=5)
+    print(f"[Gateway] Forwarded post/ratings/{doctor_id} request to backend {port}")
+    return r.json()
+
+@app.get("/ratings/{doctor_id}")
+def get_doctor_rating(doctor_id: int):
+    port = get_alive_server()
+    r = requests.get(f"http://127.0.0.1:{port}/ratings/{doctor_id}", timeout=5)
+    print(f"[Gateway] Forwarded get/ratings/{doctor_id} request to backend {port}")
+    return r.json()
+
+@app.get("/reports/sales")
+def sales_report():
+    port = get_alive_server()
+    r = requests.get(f"http://127.0.0.1:{port}/reports/sales", timeout=5)
+    print(f"[Gateway] Forwarded /reports/sales request to backend {port}")
     return r.json()
