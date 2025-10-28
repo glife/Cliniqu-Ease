@@ -26,7 +26,7 @@ def main():
     
     # Define server ports
     backend_ports = [8001, 8002, 8003]
-    gateway_port = 8000
+    gateway_port = 8004
     
     processes = []
     
