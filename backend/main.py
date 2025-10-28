@@ -29,13 +29,43 @@ MEDICINES: List[Dict] = [
     {"id": 2, "name": "Amoxicillin", "stock": 7, "price": 50},
     {"id": 3, "name": "Cough Syrup", "stock": 8, "price": 40},
     {"id": 4, "name": "Antacid", "stock": 15, "price": 25},
+    {"id": 5, "name": "Cetirizine", "stock": 12, "price": 18},
+    {"id": 6, "name": "Metformin", "stock": 9, "price": 60},
+    {"id": 7, "name": "Aspirin", "stock": 20, "price": 22},
+    {"id": 8, "name": "Azithromycin", "stock": 6, "price": 85},
+    {"id": 9, "name": "Vitamin D3", "stock": 14, "price": 45},
+    {"id": 10, "name": "Multivitamin", "stock": 17, "price": 35},
+    {"id": 11, "name": "Insulin", "stock": 5, "price": 120},
+    {"id": 12, "name": "Ciprofloxacin", "stock": 7, "price": 70},
+    {"id": 13, "name": "Loratadine", "stock": 10, "price": 28},
+    {"id": 14, "name": "Pantoprazole", "stock": 11, "price": 55},
+    {"id": 15, "name": "Hydroxychloroquine", "stock": 4, "price": 150},
+    {"id": 16, "name": "Doxycycline", "stock": 8, "price": 90},
+    {"id": 17, "name": "Losartan", "stock": 10, "price": 65},
+    {"id": 18, "name": "Amlodipine", "stock": 9, "price": 75},
+    {"id": 19, "name": "Omeprazole", "stock": 16, "price": 30},
 ]
+
 USERS: List[Dict] = []        # each: {id, username, password}
 APPOINTMENTS: List[Dict] = [] # each: {id, user_id, doctor_id, time_slot, symptoms, prescription}
 DOCTORS: List[Dict] = [
     {"id": 0, "name": "Dr. Mehta", "specialty": "General", "available_slots": ["10:00", "11:00", "15:00"]},
     {"id": 1, "name": "Dr. Rao", "specialty": "Pediatrics", "available_slots": ["09:30", "13:00", "16:00"]},
+    {"id": 2, "name": "Dr. Sharma", "specialty": "Cardiology", "available_slots": ["10:30", "12:00", "14:30"]},
+    {"id": 3, "name": "Dr. Kapoor", "specialty": "Neurology", "available_slots": ["09:00", "11:30", "15:30"]},
+    {"id": 4, "name": "Dr. Iyer", "specialty": "Orthopedics", "available_slots": ["10:15", "13:45", "17:00"]},
+    {"id": 5, "name": "Dr. Gupta", "specialty": "Dermatology", "available_slots": ["09:45", "12:30", "16:15"]},
+    {"id": 6, "name": "Dr. Nair", "specialty": "ENT", "available_slots": ["10:00", "14:00", "15:30"]},
+    {"id": 7, "name": "Dr. Singh", "specialty": "Ophthalmology", "available_slots": ["09:15", "11:45", "14:45"]},
+    {"id": 8, "name": "Dr. Bose", "specialty": "Psychiatry", "available_slots": ["10:40", "13:20", "16:10"]},
+    {"id": 9, "name": "Dr. Desai", "specialty": "Gynecology", "available_slots": ["09:00", "12:15", "15:45"]},
+    {"id": 10, "name": "Dr. Kulkarni", "specialty": "Oncology", "available_slots": ["10:20", "13:10", "16:40"]},
+    {"id": 11, "name": "Dr. Banerjee", "specialty": "Endocrinology", "available_slots": ["09:50", "12:40", "15:20"]},
+    {"id": 12, "name": "Dr. Verma", "specialty": "Gastroenterology", "available_slots": ["10:00", "13:30", "16:00"]},
+    {"id": 13, "name": "Dr. Reddy", "specialty": "Urology", "available_slots": ["09:25", "12:00", "15:50"]},
+    {"id": 14, "name": "Dr. Pillai", "specialty": "Nephrology", "available_slots": ["10:10", "13:50", "17:10"]},
 ]
+
 DOCTOR_RATINGS: Dict[int, List[int]] = {}  # doctor_id -> list of ratings
 MEDICINE_SALES = []
 lock = threading.Lock()
@@ -425,23 +455,65 @@ def consult(req: ConsultRequest):
     # simple symptom -> disease mapping
     symptom_text = " ".join(req.symptoms).lower()
     print(f"[Server {PORT}] Consulting for symptoms: {symptom_text}")
+    symptom_text = symptom_text.lower()
     if "fever" in symptom_text or "temperature" in symptom_text:
         disease = "Fever"
-        prescription = [{"medicine_id": 0, "quantity": 2}]
-    elif "cough" in symptom_text or "cold" in symptom_text:
+        prescription = [{"medicine_id": 0, "quantity": 2}]  # Paracetamol
+
+    elif "cough" in symptom_text or "cold" in symptom_text or "sneeze" in symptom_text:
         disease = "Common Cold"
-        prescription = [{"medicine_id": 0, "quantity": 1}]
-        if len(MEDICINES)>3:
-            prescription.append({"medicine_id": 3, "quantity": 1})
-    elif "pain" in symptom_text or "headache" in symptom_text:
-        disease = "Headache"
-        prescription = [{"medicine_id": 1, "quantity": 2}]
-    elif "sore" in symptom_text or "throat" in symptom_text:
-        disease = "Infection"
-        prescription = [{"medicine_id": 2, "quantity": 1}]
+        prescription = [{"medicine_id": 0, "quantity": 1}]  # Paracetamol
+        if len(MEDICINES) > 3:
+            prescription.append({"medicine_id": 3, "quantity": 1})  # Cough Syrup
+
+    elif "headache" in symptom_text or "migraine" in symptom_text or "pain" in symptom_text:
+        disease = "Headache/Pain"
+        prescription = [{"medicine_id": 1, "quantity": 2}]  # Ibuprofen
+
+    elif "sore throat" in symptom_text or "throat" in symptom_text or "infection" in symptom_text:
+        disease = "Throat Infection"
+        prescription = [{"medicine_id": 2, "quantity": 1}]  # Amoxicillin
+
+    elif "acidity" in symptom_text or "heartburn" in symptom_text or "stomach pain" in symptom_text:
+        disease = "Acidity"
+        prescription = [{"medicine_id": 4, "quantity": 1}]  # Antacid
+
+    elif "allergy" in symptom_text or "itching" in symptom_text or "rash" in symptom_text:
+        disease = "Allergy"
+        prescription = [{"medicine_id": 5, "quantity": 1}]  # Cetirizine
+
+    elif "sugar" in symptom_text or "diabetes" in symptom_text or "high glucose" in symptom_text:
+        disease = "Diabetes"
+        prescription = [{"medicine_id": 6, "quantity": 1}]  # Metformin
+
+    elif "chest pain" in symptom_text or "blood pressure" in symptom_text or "bp" in symptom_text:
+        disease = "Hypertension"
+        prescription = [{"medicine_id": 17, "quantity": 1}]  # Losartan
+
+    elif "bone pain" in symptom_text or "weakness" in symptom_text or "vitamin" in symptom_text:
+        disease = "Vitamin Deficiency"
+        prescription = [{"medicine_id": 9, "quantity": 1}]  # Vitamin D3
+
+    elif "infection" in symptom_text or "bacteria" in symptom_text or "antibiotic" in symptom_text:
+        disease = "Bacterial Infection"
+        prescription = [{"medicine_id": 12, "quantity": 1}]  # Ciprofloxacin
+
+    elif "asthma" in symptom_text or "breath" in symptom_text or "respiratory" in symptom_text:
+        disease = "Respiratory Illness"
+        prescription = [{"medicine_id": 3, "quantity": 1}, {"medicine_id": 5, "quantity": 1}]  # Cough Syrup + Antihistamine
+
+    elif "stomach" in symptom_text or "diarrhea" in symptom_text or "loose motion" in symptom_text:
+        disease = "Gastrointestinal Infection"
+        prescription = [{"medicine_id": 12, "quantity": 1}]  # Ciprofloxacin
+
+    elif "joint pain" in symptom_text or "arthritis" in symptom_text:
+        disease = "Arthritis"
+        prescription = [{"medicine_id": 1, "quantity": 2}, {"medicine_id": 15, "quantity": 1}]  # Ibuprofen + Hydroxychloroquine
+
     else:
         disease = "General Checkup"
-        prescription = [{"medicine_id": 4 if len(MEDICINES)>4 else 0, "quantity": 1}]
+        prescription = [{"medicine_id": 10 if len(MEDICINES)>10 else 0, "quantity": 1}]  # Multivitamin or fallback Paracetamol
+
 
     # store into latest appointment if exists
     with lock:
@@ -665,4 +737,4 @@ def sales_report():
 if __name__ == "__main__":
     print(f"Starting server on port {PORT}. Initial coordinator: {coordinator_port}")
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=PORT, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=PORT)
