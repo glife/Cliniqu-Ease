@@ -36,7 +36,7 @@ export default function PharmacyHome() {
       <nav className="bg-white/90 backdrop-blur shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
-            <div className="flex items-center"><Link to="/" className="text-2xl font-bold text-indigo-600">Cliqu-Ease</Link></div>
+            <div className="flex items-center"><Link to="/" className="text-2xl font-bold text-indigo-600">Cliniqu-Ease</Link></div>
           </div>
         </div>
       </nav>

@@ -40,7 +40,7 @@ export default function BookAppointment() {
 
   const handleSubmit = async () => {
     if (!user) { setMessage("Please login first"); return; }
-    if (!doctorId || !selectedSlot) { setMessage("Please select doctor and time slot"); return; }
+    if (doctorId == null || !selectedSlot) { setMessage("Please select doctor and time slot"); return; }
     try {
       const res = await api("/book", "POST", { user_id: user.id, doctor_id: doctorId, time_slot: selectedSlot });
       if (res.status === "SUCCESS") {

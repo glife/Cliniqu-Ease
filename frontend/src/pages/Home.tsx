@@ -15,7 +15,7 @@ export default function Home() {
                 </svg>
               </div>
               <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-                Cliqu-Ease
+                Cliniqu-Ease
               </h1>
             </div>
             <div className="flex items-center space-x-4">
